@@ -1,4 +1,5 @@
 class Pulse_classifier:
+    #This class helps to identify the pulse type (sync/laser sweep) and laser sweep orientation (verticle/Horizontal)
     def __init__(self, time_delta):
 
       self.pulse = 'n'
