@@ -4,6 +4,7 @@ from pulse_class import Pulse_classifier
 import RPi.GPIO as GPIO
 import time
 from move_to_goal import MoveToPointController
+import numpy as np
 
 GPIO.setwarnings(False)
 # For GPIO numbering,
@@ -15,7 +16,8 @@ GPIO.setup(23, GPIO.IN, GPIO.PUD_DOWN)
 p_rise = 0
 offset_start = 0
 U=[0.0, 0.0, 0.0]
-base = [5.0, 0.0, 2.0]
+base = [-1.528176, 2.433746, -1.969393]
+r_matrix = [[-0.839498, 0.340747, -0.423244], [-0.041220, 0.736752, 0.674906], [0.541798, 0.584028, -0.604456]]
 current_pos = [0.0, 0.0, 0.0]
 V_hor = [0.0, 0.0, 0.0]
 V_ver = [0.0, 0.0, 0.0]
@@ -23,7 +25,7 @@ v_sweep_count = 0
 h_sweep_count = 0
 
 while True:
-    ir_get = not GPIO.input(23)
+    ir_get = GPIO.input(23) 
         
     if (ir_get and (p_rise==0)):
             uptime = time.clock()
@@ -34,7 +36,7 @@ while True:
             delta_t = (downtime - uptime) * 1000000 #Convert to microseconds
 
             #time offset calculation
-            print("delta_t", delta_t)
+            #print("delta_t", delta_t)
             pc = Pulse_classifier(delta_t)
             #print(pc.pulse, pc.angle)
 
@@ -64,9 +66,11 @@ while True:
                     elif (sweep_type == 'v'):
                        V_ver = ta.V_ver
                        h_sweep_count +=1
+                
                     #print(v_sweep_count,h_sweep_count)
-                    if (v_sweep_count < 5 and v_sweep_count > 0 and h_sweep_count < 5 and h_sweep_count > 0):
-                       print(v_sweep_count,h_sweep_count, V_hor, V_ver)
+                    #if (v_sweep_count < 5 and v_sweep_count > 0 and h_sweep_count < 5 and h_sweep_count > 0):
+                    if (v_sweep_count > 0 and h_sweep_count > 0):
+                       #print(v_sweep_count,h_sweep_count, V_hor, V_ver)
 
                        v_sweep_count = 0
                        h_sweep_count = 0
@@ -77,16 +81,27 @@ while True:
                        U[1] = V_hor[2] * V_ver[0] - V_hor[0] * V_ver[2]
                        U[2] = V_hor[0] * V_ver[1] - V_hor[1] * V_ver[0]
 
+                       #Normalizing U to minimize the calculation errors
+                       U_norm = U/np.linalg.norm(U)
+
+                       #To convert U to a single, global reference frame, multiply by the station rotation matrices 
+                       U_norm = np.array([U_norm]).T
+                       U_glob = [[sum(a*b for a,b in zip(X_row,Y_col)) for Y_col in zip(*U_norm)] for X_row in r_matrix]
+
                        #Do scaler multiplication and calculate current position
                        for x in range(3):
-                           U[x] = U[x] * 1.5; #1.5 is a random scaler parameter
-                           current_pos[x] = base[x] + U[x]
+                           #U[x] = U[x] * 1.5; #1.5 is a random scaler parameter
+                           current_pos[x] = base[x] + (U_glob[x])[0] * 1.5
+                           #current_pos[x] = base[x] + U[x]
                     
                        print("Current position")
                        print(current_pos[0], current_pos[1], current_pos[2])
                     
                        # MoveToPointController(home_x, home_y, current_x, current_y)
                        #MoveToPointController(base[0], base[2], current_pos[0], current_pos[2])
+                    #else:
+                    #    print(v_sweep_count,h_sweep_count, V_hor, V_ver)
+                    #    print("Sweep expaired")
                 
                 else:
                     print(".......................",offset_delta)
