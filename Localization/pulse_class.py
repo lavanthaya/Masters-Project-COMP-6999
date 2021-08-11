@@ -7,7 +7,7 @@ class Pulse_classifier:
 
       sync_max = 135; #us
       sync_low = 104; #us
-      sweep_max = 55; #us
+      sweep_max = 10; #us
       
       
       if (((time_delta >=sync_low) and (time_delta < 110)) or ((time_delta >= 120) and (time_delta < 130))):
