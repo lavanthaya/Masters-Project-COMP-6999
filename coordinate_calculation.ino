@@ -1,25 +1,26 @@
 int IR_IN = 12;
 int led = 13;
-int Up = 0;
 
 //Global Variables
 unsigned long UpTime=0;
 unsigned long DownTime=0;
-unsigned long DeltaTime=0;
+unsigned long pulse_len=0;
 unsigned long offset_start=0;
 unsigned long offset_end=0;
-unsigned long offset_delta=0;
-float V_hor[3] = {0.0, 0.0, 0.0};
-float V_ver[3] = {0.0, 0.0, 0.0};
-float U[3] = {0.0, 0.0, 0.0};
-float base[3] = {5.0, 0.0, 2.0};
-float current_pos[3] = {0.0, 0.0, 0.0};
-
+unsigned long sweep_offset=0;
+float dist_from_origin = 0.0 ;
+float pos_x = 0.0 ;
+float pos_y = 0.0;
+int v_sweep_count = 0;
+int h_sweep_count = 0;
+bool syncpulse = false;
+char sweep_angle = 'n';
+int sweep_ttl = 3;
+int Up = 0;
 
 //Function prototypes
-float position_calculation(unsigned long);
 void pulse_classifier(unsigned long, char*, char*);
-void angle_calculation(unsigned long, char, float*, float*);
+void angle_calculation(unsigned long, float*);
 
 void setup() {
   // put your setup code here, to run once:
@@ -32,79 +33,72 @@ void loop() {
   // put your main code here, to run repeatedly:
   char pulse ='n';
   char angle ='n';
-  //Serial.println(digitalRead(IR_IN));
   
-  if (!digitalRead(IR_IN) && (Up==0)) {
+  if (digitalRead(IR_IN) && (Up==0)) {
         UpTime = micros();
-        //Serial.println("High");
-        //digitalWrite(led, HIGH);
+        sweep_offset = UpTime - DownTime;
         Up=1;
       }
     
   else if (digitalRead(IR_IN) && (Up==1)){ 
-         DownTime = micros();
-         DeltaTime= DownTime - UpTime;
-         //Serial.println("Low");
-         //Serial.println("DeltaTime:");
-         //Serial.println(DeltaTime);
-         
-         ///offset calculation///
-         pulse_classifier(DeltaTime, &pulse, &angle);
-         //Serial.println("pulse_classifier:");
-         //Serial.println(pulse);
-         
-         if (pulse == 's'){
-             offset_start = micros();
-             //Serial.println("Sync:");
-             //Serial.println(DeltaTime);
-             
-         }else if ((pulse == 'p') && (offset_start > 0)){
-             offset_end = micros();
-             offset_delta = (offset_end - offset_start);//- DeltaTime;  //substracting deltatime to remove pulse width
-             offset_start=0;
+        DownTime =  micros();
+        pulse_len = DownTime - UpTime;  //pulse length
 
-             ///Do position calculation
-             if ((offset_delta > 0) && (offset_delta <= (8333-104-DeltaTime))){
-                   Serial.println("Offset:");
-                   Serial.println(offset_delta); 
-            
-                   //Returns V_hor, V_ver in radiants (vector)
-                   angle_calculation(offset_delta, angle, V_hor, V_ver);  
-                  
-                   //Cross product of V_hor × V_ver
-                   //U be perpendicular to both V_hor and V_ver
-                   U[0] = V_hor[1] * V_ver[2] - V_hor[2] * V_ver[1];
-                   U[1] = V_hor[2] * V_ver[0] - V_hor[0] * V_ver[2];
-                   U[2] = V_hor[0] * V_ver[1] - V_hor[1] * V_ver[0];
-            
-                   //scaler multiplication and calculate current position
-                   for (int i=0; i<3; i++){
-                        U[i] = U[i] * 1.5; //1.5 is a random value
-                        current_pos[i] = base[i] + U[i];      
-                   }
+        pulse_classifier(pulse_len,&pulse, &angle);
+
+        if (pulse == 's'){
+            syncpulse = true;
+            sweep_angle = angle;
+             
+        }else if ((pulse == 'p') && (syncpulse == true)){ //this condition makes sure, laser is captured after sync pulse
+            syncpulse = false;
+            sweep_offset = sweep_offset - pulse_len;
+
+            if ((sweep_offset > 0) && (sweep_offset <= (8333-104))){
+
+                angle_calculation(sweep_offset, &dist_from_origin); 
+
+                //In below line we are assuming horizontal sweep covers X axis and vertical for Y axis
+                //based on lighthouse orientation, it can change
+  
+                if (sweep_angle == 'h'){
+                      pos_x = dist_from_origin;
+                      v_sweep_count +=1;
+                  }
+  
+                else if (sweep_angle == 'v'){
+                      pos_y = dist_from_origin;
+                      h_sweep_count +=1;
+                  }
+
+                if (v_sweep_count > 0 && h_sweep_count > 0 && v_sweep_count < sweep_ttl && h_sweep_count < sweep_ttl){
+                    //do the robot control comes here
+                    Serial.println(pos_x, pos_y);
                     
-                   Serial.println("Current position:");
-                   Serial.println(current_pos[0]);
-                   Serial.println(current_pos[2]);
-                           
-             }else{
-                Serial.println("Error offset value");
-                //Serial.println(offset_delta);
-             }  
-         }
-         digitalWrite(led, LOW);
-         Up=0;
-      }
-  ////unsigned long peTime = micros();
-  //Serial.println("loop time");
-  //Serial.println(peTime - psTime);
+                    v_sweep_count = 0;
+                    h_sweep_count = 0;
+
+                  
+                  }
+                    
+
+                else if(v_sweep_count >=sweep_ttl or h_sweep_count >=sweep_ttl){
+                    Serial.println("Invalid measurement");
+                    v_sweep_count = 0;
+                    h_sweep_count = 0;
+                  }    
+              
+            }
+          
+        }
+    }
 }
 
 //Classify the pulses and process it.
 void pulse_classifier(unsigned long tm_delta, char* pulse, char* angle){
       unsigned int sync_max = 135; //us
       unsigned int sync_low = 104; //us
-      unsigned int sweep_max = 55; //us
+      unsigned int sweep_max = 10; //us
       
       if (((tm_delta >=sync_low) && (tm_delta < 110))||((tm_delta >= 120) && (tm_delta < 130))){
         *pulse = 's';
@@ -119,20 +113,22 @@ void pulse_classifier(unsigned long tm_delta, char* pulse, char* angle){
       }
   }
 
+// Do pose estimation; calculate distance from origin
+void angle_calculation(unsigned long offset_delta, float* distance){  
 
-void angle_calculation(unsigned long offset_delta, char angle, float* V_hor, float* V_ver){
-  //<time offset in µs> ; <central time offset = 4000> ; <cycle period = 8333>
-  float sweep_angle = (offset_delta - 4000) * PI / 8333;
+  float omega = PI/(8.33* pow(10,-3)); //rad/sec : laser drum angular velocity
+  float height = 2.4; // lighthouse height in meters
+  *distance = 0.0;
   
-  if (angle == 'h'){
-    V_hor[0] = 0.0;
-    V_hor[1] = cos(sweep_angle);
-    V_hor[2] = sin(sweep_angle);
-     
-  } else if (angle == 'v'){
-    V_ver[0] = cos(sweep_angle);
-    V_ver[1] = 0.0;
-    V_ver[2] = -sin(sweep_angle);
-    
-  } 
+  float sweep_angle = omega * (offset_delta * pow(10, -6)); // units in rad
+  float angle_degree = sweep_angle * 57296/1000; //convert rad to degree
+  
+  if (angle_degree < 90){
+       *distance = height/tan(sweep_angle); //pass angle in radians
+  }
+
+  else if (angle_degree > 90){
+      *distance = height * tan((PI/2) - sweep_angle) ;
+  }    
+   
 }
