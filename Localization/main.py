@@ -1,10 +1,13 @@
 #-*- coding: utf-8 -*-
 from time_angle import Time_angle
 from pulse_class import Pulse_classifier
+from ekf_model import EKF_model
 import RPi.GPIO as GPIO
 import time
 from move_to_goal import MoveToPointController
+from moverobot import MoveToPoint
 import numpy as np
+
 
 GPIO.setwarnings(False)
 # For GPIO numbering,
@@ -13,97 +16,74 @@ GPIO.setmode(GPIO.BCM)
 # GPIO pin 23 connected to IR receiver
 GPIO.setup(23, GPIO.IN, GPIO.PUD_DOWN)
 
-p_rise = 0
-offset_start = 0
-U=[0.0, 0.0, 0.0]
-base = [-1.528176, 2.433746, -1.969393]
-r_matrix = [[-0.839498, 0.340747, -0.423244], [-0.041220, 0.736752, 0.674906], [0.541798, 0.584028, -0.604456]]
-current_pos = [0.0, 0.0, 0.0]
-V_hor = [0.0, 0.0, 0.0]
-V_ver = [0.0, 0.0, 0.0]
+origin = [0,0] #x,y
+sync = False
+p_rise=0
+p_end = 0
+p_start =0
 v_sweep_count = 0
 h_sweep_count = 0
+position_X = 0.0
+position_Y = 0.0
 
+f = open("offset.txt", "a")
 while True:
-    ir_get = GPIO.input(23) 
+    if (GPIO.input(23) and (p_rise==0)):
+        p_start = time.clock()
+
+        sweep_offset = (p_start - p_end) * 1000000
+        p_rise = 1
+    
+    elif (not GPIO.input(23) and (p_rise == 1)):
+        p_end = time.clock()
+        p_len = (time.clock() - p_start)*1000000
+
+        pulse_type = Pulse_classifier(p_len)
+        p_rise = 0
+
+        if pulse_type.pulse =='s':
+            sync = True
+            sweep_type = pulse_type.angle
         
-    if (ir_get and (p_rise==0)):
-            uptime = time.clock()
-            p_rise = 1
+        elif ((pulse_type.pulse == 'p') and (sync == True)):
+            sync = False    
+            sweep_offset = sweep_offset - p_len  #substracting pulse time to remove sweep pulse width (uSec)
+
+            #Do position calculation
+            if ((sweep_offset > 0) and (sweep_offset < (8333-104))): #104 possible minimum sync pulse width
+                #Returns V_hor, V_ver in radiants (vector)
+                ta = Time_angle(sweep_offset, sweep_type)
+
+                if (sweep_type == 'h'):
+                    position_X = ta.hor_pos
+                    v_sweep_count +=1
+                    #print('h:',sweep_offset)
+                    h_t = sweep_offset
+
+                elif (sweep_type == 'v'):
+                    position_Y = ta.ver_pos
+                    h_sweep_count +=1
+                    #print('V:',sweep_offset)
+                    v_t = sweep_offset
+                
+                sweep_ttl = 3
+                if (v_sweep_count > 0 and h_sweep_count > 0 and v_sweep_count < sweep_ttl and h_sweep_count < sweep_ttl):
+                    print(position_X, position_Y,)
+                    #do the robot control code here
+                
+                    position = str(position_X)+","+str(position_Y)+","+str(h_t)+","+str(v_t)
+                    f.write(position)
+                    f.write("\n")
+                    v_sweep_count = 0
+                    h_sweep_count = 0
+
+
+                elif(v_sweep_count >=sweep_ttl or h_sweep_count >=sweep_ttl):
+                    v_sweep_count = 0
+                    h_sweep_count = 0
+            
+            #else:
+            #        print("offset noise",sweep_offset)
         
-    elif((not ir_get) and (p_rise == 1)):
-            downtime = time.clock()
-            delta_t = (downtime - uptime) * 1000000 #Convert to microseconds
+        
 
-            #time offset calculation
-            #print("delta_t", delta_t)
-            pc = Pulse_classifier(delta_t)
-            #print(pc.pulse, pc.angle)
-
-            if pc.pulse =='s':
-                offset_start = time.clock()
-                sweep_type = pc.angle
-                #print("iam sync")
-
-            elif ((pc.pulse == 'p') and (offset_start > 0)):
-                offset_end = time.clock()
-                offset_delta = ((offset_end - offset_start)* 1000000)- delta_t;  #substracting deltatime to remove pulse width
-                offset_start=0
-                #print("iam pulse")
-
-                offset_delta = offset_delta/1000.00
-                #print("pulse offset", offset_delta)
-
-                #Do position calculation
-                if ((offset_delta > 0) and (offset_delta <= (8333))): #104 possible minimum sync pulse width
-                    #Returns V_hor, V_ver in radiants (vector)
-                    #print("offset", offset_delta, sweep_type)
-                    ta = Time_angle(offset_delta, sweep_type)
-
-                    if (sweep_type == 'h'):
-                       V_hor = ta.V_hor
-                       v_sweep_count +=1
-                    elif (sweep_type == 'v'):
-                       V_ver = ta.V_ver
-                       h_sweep_count +=1
-                
-                    #print(v_sweep_count,h_sweep_count)
-                    #if (v_sweep_count < 5 and v_sweep_count > 0 and h_sweep_count < 5 and h_sweep_count > 0):
-                    if (v_sweep_count > 0 and h_sweep_count > 0):
-                       #print(v_sweep_count,h_sweep_count, V_hor, V_ver)
-
-                       v_sweep_count = 0
-                       h_sweep_count = 0
-
-                       #Cross product of V_hor × V_ver
-                       #U be perpendicular to both V_hor and V_ver[]
-                       U[0] = V_hor[1] * V_ver[2] - V_hor[2] * V_ver[1]
-                       U[1] = V_hor[2] * V_ver[0] - V_hor[0] * V_ver[2]
-                       U[2] = V_hor[0] * V_ver[1] - V_hor[1] * V_ver[0]
-
-                       #Normalizing U to minimize the calculation errors
-                       U_norm = U/np.linalg.norm(U)
-
-                       #To convert U to a single, global reference frame, multiply by the station rotation matrices 
-                       U_norm = np.array([U_norm]).T
-                       U_glob = [[sum(a*b for a,b in zip(X_row,Y_col)) for Y_col in zip(*U_norm)] for X_row in r_matrix]
-
-                       #Do scaler multiplication and calculate current position
-                       for x in range(3):
-                           #U[x] = U[x] * 1.5; #1.5 is a random scaler parameter
-                           current_pos[x] = base[x] + (U_glob[x])[0] * 1.5
-                           #current_pos[x] = base[x] + U[x]
-                    
-                       print("Current position")
-                       print(current_pos[0], current_pos[1], current_pos[2])
-                    
-                       # MoveToPointController(home_x, home_y, current_x, current_y)
-                       #MoveToPointController(base[0], base[2], current_pos[0], current_pos[2])
-                    #else:
-                    #    print(v_sweep_count,h_sweep_count, V_hor, V_ver)
-                    #    print("Sweep expaired")
-                
-                else:
-                    print(".......................",offset_delta)
-
-            p_rise = 0
